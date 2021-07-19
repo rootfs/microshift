@@ -2,6 +2,9 @@ package components
 
 import (
 	"context"
+	"io/ioutil"
+
+	"github.com/sirupsen/logrus"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -15,10 +18,28 @@ import (
 	"github.com/openshift/microshift/pkg/config"
 )
 
+func startDefaultComponents(cfg *config.MicroshiftConfig) error {
+	if err := startFlannel(cfg.DataDir + "/resources/kubeadmin/kubeconfig"); err != nil {
+		logrus.Warningf("failed to start Flannel: %v", err)
+		return err
+	}
+	return nil
+}
+
 func StartComponents(cfg *config.MicroshiftConfig) error {
+	if err := startDefaultComponents(cfg); err != nil {
+		return err
+	}
+
 	if len(cfg.Components) == 0 {
 		return nil
 	}
+
+	kubeconfigBuf, err := ioutil.ReadFile(cfg.DataDir + "/resources/kubeadmin/kubeconfig")
+	if err != nil {
+		return err
+	}
+
 	componentLoadNamespace := "component-loader-ns"
 	restConfig, err := clientcmd.BuildConfigFromFlags("", cfg.DataDir+"/resources/kubeadmin/kubeconfig")
 	if err != nil {
@@ -26,7 +47,7 @@ func StartComponents(cfg *config.MicroshiftConfig) error {
 	}
 	// create the namespace for component loader
 	coreclient := coreclientv1.NewForConfigOrDie(rest.AddUserAgent(restConfig, "core-agent"))
-	ns := corev1.Namespace{
+	ns := &corev1.Namespace{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Namespace",
 			APIVersion: "v1",
@@ -35,33 +56,62 @@ func StartComponents(cfg *config.MicroshiftConfig) error {
 			Name: componentLoadNamespace,
 		},
 	}
-	_, err = coreclient.Namespaces().Create(context.TODO(), &ns, metav1.CreateOptions{})
+	_, err = coreclient.Namespaces().Create(context.TODO(), ns, metav1.CreateOptions{})
+	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			return nil
+		}
+		return err
+	}
+
+	// create a kubeconfig secret for the job
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "microshift-component-loader-kubeconfig",
+			Namespace: componentLoadNamespace,
+		},
+		Data: map[string][]byte{
+			"kubeconfig": kubeconfigBuf,
+		},
+	}
+	_, err = coreclient.Secrets(componentLoadNamespace).Create(context.TODO(), secret, metav1.CreateOptions{})
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
+	kubeconfigVar := corev1.EnvVar{Name: "KUBECONFIG", Value: "/var/lib/microshift/kubeconfig"}
 
 	batchclient := batchclientv1.NewForConfigOrDie(rest.AddUserAgent(restConfig, "batch-agent"))
 
 	for _, component := range cfg.Components {
 		image := component.Image
-		// create a ConfigMap for loader to report readiness
-		cm := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "microshift-component-loader-status-" + component.Name,
-				Namespace: componentLoadNamespace,
+		args := []string{}
+		var mode int32 = 0666
+		volumes := []corev1.Volume{
+			corev1.Volume{
+				Name: "kubeconfig",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: "microshift-component-loader-kubeconfig",
+						Items: []corev1.KeyToPath{
+							{
+								Key:  "kubeconfig",
+								Path: "kubeconfig",
+							},
+						},
+						DefaultMode: &mode,
+					},
+				},
 			},
-			Data: map[string]string{
-				"Status": "Init",
-			},
-		}
-		_, err = coreclient.ConfigMaps(componentLoadNamespace).Create(context.TODO(), cm, metav1.CreateOptions{})
-		if err != nil && !apierrors.IsAlreadyExists(err) {
-			return err
 		}
 
-		args := []string{}
-		volumes := []corev1.Volume{}
-		volMounts := []corev1.VolumeMount{}
+		volMounts := []corev1.VolumeMount{
+			corev1.VolumeMount{
+				Name:      "kubeconfig",
+				MountPath: "/var/lib/microshift",
+			},
+		}
+
+		logrus.Infof("creating loader job %s", component.Name)
 		if len(component.Parameters) > 0 {
 			// if the component loader has parameters,
 			// create a ConfigMap and volume-mount it
@@ -72,6 +122,8 @@ func StartComponents(cfg *config.MicroshiftConfig) error {
 				},
 				Data: component.Parameters,
 			}
+			logrus.Infof("applying cm for loader job %s", component.Name)
+
 			_, err = coreclient.ConfigMaps(componentLoadNamespace).Create(context.TODO(), cm, metav1.CreateOptions{})
 			if err != nil && !apierrors.IsAlreadyExists(err) {
 				return err
@@ -93,17 +145,14 @@ func StartComponents(cfg *config.MicroshiftConfig) error {
 			volumes = append(volumes, volume)
 		}
 		container := corev1.Container{
-			Name:         "microshift-component-loader",
-			Image:        image,
-			Command:      []string{"/loader"},
-			Args:         args,
-			VolumeMounts: volMounts,
+			Name:  "microshift-component-loader",
+			Image: image,
+			// container entrypoint is Command
+			Args: args,
 			Env: []corev1.EnvVar{
-				corev1.EnvVar{
-					Name:  "MICROSHIFT_READINESS_STATUS_CONFIGMAP",
-					Value: "microshift-component-loader-" + component.Name,
-				},
+				kubeconfigVar,
 			},
+			VolumeMounts: volMounts,
 		}
 		// create a job to start component loader
 		job := &batchv1.Job{
@@ -121,18 +170,20 @@ func StartComponents(cfg *config.MicroshiftConfig) error {
 						Containers: []corev1.Container{
 							container,
 						},
-						Volumes: volumes,
+						Volumes:       volumes,
+						RestartPolicy: corev1.RestartPolicyOnFailure,
 					},
 				},
 			},
 		}
-
+		logrus.Infof("applying loader job %s", component.Name)
 		_, err = batchclient.Jobs(componentLoadNamespace).Create(context.TODO(), job, metav1.CreateOptions{})
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return err
 		}
 		// watch job status
 		// check status in configmap
+		// delete the job
 	}
 	return nil
 }
