@@ -166,10 +166,12 @@ func startControllerOnly(cfg *config.MicroshiftConfig) error {
 	controllers.OCPControllerManager(cfg)
 
 	if err := controllers.StartOCPAPIComponents(cfg); err != nil {
+		logrus.Warningf("failed to start ocp API components: %v", err)
 		return err
 	}
 
 	if err := components.StartComponents(cfg); err != nil {
+		logrus.Warningf("failed to start components: %v", err)
 		return err
 	}
 	return nil
