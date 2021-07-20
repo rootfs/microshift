@@ -211,15 +211,6 @@ func PrepareOCP(cfg *config.MicroshiftConfig) error {
 }
 
 func StartOCPAPIComponents(cfg *config.MicroshiftConfig) error {
-	// ocp api service registration
-	if err := createAPIHeadlessSvc(cfg); err != nil {
-		logrus.Warningf("failed to apply headless svc %v", err)
-		return err
-	}
-	if err := createAPIRegistration(cfg); err != nil {
-		logrus.Warningf("failed to register api %v", err)
-		return err
-	}
 	if err := applySCCs(cfg.DataDir + "/resources/kubeadmin/kubeconfig"); err != nil {
 		logrus.Warningf("failed to apply sccs: %v", err)
 		return err
