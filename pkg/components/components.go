@@ -191,7 +191,6 @@ func StartComponents(cfg *config.MicroshiftConfig) error {
 			return err
 		}
 		ch := watcher.ResultChan()
-		// LISTEN TO CHANNEL
 		for {
 			event, active := <-ch
 			if active {
@@ -199,14 +198,12 @@ func StartComponents(cfg *config.MicroshiftConfig) error {
 				case watch.Modified:
 					newJob, ok := event.Object.(*batchv1.Job)
 					if !ok {
-						logrus.Warningf("failed to get loader job after watch")
+						logrus.Warning("failed to get loader job after watch")
 						continue
 					}
 					logrus.Infof("job status %v", newJob.Status)
-					for _, condition := range newJob.Status.Conditions {
-						if condition.Type == batchv1.JobFailed {
-							return fmt.Errorf("component loader job failed")
-						}
+					if newJob.Status.Failed >= 3 {
+						return fmt.Errorf("component loader job failed")
 					}
 					logrus.Infof("component loader job succeeded")
 					break
