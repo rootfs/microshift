@@ -84,9 +84,7 @@ func RunMicroshift(cfg *config.MicroshiftConfig, flags *pflag.FlagSet) error {
 				defer close(stopped)
 				defer close(ready)
 
-				startControllerOnly(cfg)
-
-				return nil
+				return startControllerOnly(cfg)
 			},
 		)))
 	}
@@ -156,6 +154,7 @@ func startControllerOnly(cfg *config.MicroshiftConfig) error {
 	controllers.KubeScheduler(cfg)
 
 	if err := controllers.PrepareOCP(cfg); err != nil {
+		logrus.Warningf("failed to prepare ocp: %v", err)
 		return err
 	}
 
