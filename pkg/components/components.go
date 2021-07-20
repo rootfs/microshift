@@ -35,7 +35,7 @@ func StartComponents(cfg *config.MicroshiftConfig) error {
 		return nil
 	}
 
-	kubeconfigBuf, err := ioutil.ReadFile(cfg.DataDir + "/resources/kubeadmin/kubeconfig")
+	kubeconfigBuf, err := ioutil.ReadFile(cfg.DataDir + "/resources/kubeadmin/kubeconfig.public")
 	if err != nil {
 		return err
 	}
