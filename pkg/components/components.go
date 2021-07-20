@@ -171,8 +171,10 @@ func StartComponents(cfg *config.MicroshiftConfig) error {
 						Containers: []corev1.Container{
 							container,
 						},
-						Volumes:       volumes,
-						RestartPolicy: corev1.RestartPolicyOnFailure,
+						Volumes: volumes,
+						// don't restart the job upon failure
+						// watcher will count the failures and exit after 3 retries
+						RestartPolicy: corev1.RestartPolicyNever,
 					},
 				},
 			},
@@ -201,8 +203,8 @@ func StartComponents(cfg *config.MicroshiftConfig) error {
 						logrus.Warning("failed to get loader job after watch")
 						continue
 					}
-					logrus.Infof("job status %v", newJob.Status)
-					if newJob.Status.Failed >= 3 {
+					logrus.Infof("component loader job status %v\n", newJob.Status)
+					if newJob.Status.Failed > 3 {
 						return fmt.Errorf("component loader job failed")
 					}
 					logrus.Infof("component loader job succeeded")
