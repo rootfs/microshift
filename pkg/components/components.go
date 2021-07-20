@@ -2,6 +2,7 @@ package components
 
 import (
 	"context"
+	"fmt"
 	"io/ioutil"
 
 	"github.com/sirupsen/logrus"
@@ -10,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
 	batchclientv1 "k8s.io/client-go/kubernetes/typed/batch/v1"
 	coreclientv1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
@@ -35,11 +37,6 @@ func StartComponents(cfg *config.MicroshiftConfig) error {
 		return nil
 	}
 
-	kubeconfigBuf, err := ioutil.ReadFile(cfg.DataDir + "/resources/kubeadmin/kubeconfig.public")
-	if err != nil {
-		return err
-	}
-
 	componentLoadNamespace := "component-loader-ns"
 	restConfig, err := clientcmd.BuildConfigFromFlags("", cfg.DataDir+"/resources/kubeadmin/kubeconfig")
 	if err != nil {
@@ -63,8 +60,11 @@ func StartComponents(cfg *config.MicroshiftConfig) error {
 		}
 		return err
 	}
-
-	// create a kubeconfig secret for the job
+	// embed kubeadm in a secret volume
+	kubeconfigBuf, err := ioutil.ReadFile(cfg.DataDir + "/resources/kubeadmin/kubeconfig.public")
+	if err != nil {
+		return err
+	}
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "microshift-component-loader-kubeconfig",
@@ -78,6 +78,7 @@ func StartComponents(cfg *config.MicroshiftConfig) error {
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
+	// create a KUBECONFIG env var
 	kubeconfigVar := corev1.EnvVar{Name: "KUBECONFIG", Value: "/var/lib/microshift/kubeconfig"}
 
 	batchclient := batchclientv1.NewForConfigOrDie(rest.AddUserAgent(restConfig, "batch-agent"))
@@ -147,7 +148,7 @@ func StartComponents(cfg *config.MicroshiftConfig) error {
 		container := corev1.Container{
 			Name:  "microshift-component-loader",
 			Image: image,
-			// container entrypoint is Command
+			// use container's entrypoint for `Command`
 			Args: args,
 			Env: []corev1.EnvVar{
 				kubeconfigVar,
@@ -182,8 +183,44 @@ func StartComponents(cfg *config.MicroshiftConfig) error {
 			return err
 		}
 		// watch job status
-		// check status in configmap
-		// delete the job
+		watcher, err := batchclient.Jobs(componentLoadNamespace).Watch(
+			context.TODO(),
+			metav1.SingleObject(metav1.ObjectMeta{
+				Name: "microshift-component-loader-" + component.Name, Namespace: componentLoadNamespace}))
+		if err != nil {
+			return err
+		}
+		ch := watcher.ResultChan()
+		// LISTEN TO CHANNEL
+		for {
+			event, active := <-ch
+			if active {
+				switch event.Type {
+				case watch.Modified:
+					newJob, ok := event.Object.(*batchv1.Job)
+					if !ok {
+						logrus.Warningf("failed to get loader job after watch")
+						continue
+					}
+					logrus.Infof("job status %v", newJob.Status)
+					for _, condition := range newJob.Status.Conditions {
+						if condition.Type == batchv1.JobFailed {
+							return fmt.Errorf("component loader job failed")
+						}
+					}
+					logrus.Infof("component loader job succeeded")
+					break
+				case watch.Deleted:
+					logrus.Infof("component loader job deleted")
+					break
+				default:
+					// skip
+				}
+			} else {
+				logrus.Infof("component loader job watcher closed")
+				break
+			}
+		}
 	}
 	return nil
 }
