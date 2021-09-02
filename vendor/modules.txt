@@ -925,6 +925,10 @@ github.com/openshift/library-go/pkg/template/generator
 github.com/openshift/library-go/pkg/template/templateprocessing
 github.com/openshift/library-go/pkg/template/templateprocessingclient
 github.com/openshift/library-go/pkg/unidling/unidlingclient
+# github.com/openshift/oauth-apiserver v0.0.0-20210323120116-69f527e90f59
+## explicit
+# github.com/openshift/oauth-server v0.0.0-alpha.0.0.20210603214850-61db550b94b0
+## explicit
 # github.com/openshift/openshift-apiserver v0.0.0-alpha.0.0.20210324042139-a0f41548179e
 ## explicit
 github.com/openshift/openshift-apiserver/pkg/api
@@ -1129,8 +1133,7 @@ github.com/peterbourgon/diskv
 # github.com/pkg/errors v0.9.1
 ## explicit
 github.com/pkg/errors
-# github.com/pkg/profile v1.3.0
-## explicit
+# github.com/pkg/profile v1.4.0
 github.com/pkg/profile
 # github.com/pquerna/cachecontrol v0.0.0-20171018203845-0dec1b30a021
 ## explicit
